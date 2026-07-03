@@ -1,0 +1,4 @@
+.DS_Store
+Thumbs.db
+# local Claude Code preview/dev helper (not part of the demo)
+.claude/
