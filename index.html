@@ -33,7 +33,7 @@
   .card {
     position: fixed;
     inset: 0;
-    will-change: transform;
+    will-change: clip-path;
   }
   #cardBack {
     z-index: 1;
@@ -57,7 +57,11 @@
     backdrop-filter: blur(5px);
     -webkit-backdrop-filter: blur(5px);
     pointer-events: none;
+    transition: opacity 0.35s ease;
     z-index: 10;
+  }
+  .hud.hidden {
+    opacity: 0;
   }
 
   .wheel-wrap {
@@ -150,7 +154,7 @@
   // left/right swipes exact inverses of each other.
   var GOLDEN = 360 * (2 - (1 + Math.sqrt(5)) / 2); // ≈ 137.50776°
   var SWIPE_THRESHOLD = 40; // px
-  var SLIDE_MS = 430; // card-slide duration
+  var SLIDE_MS = 560; // wipe / slide duration
   var CURSOR_R = 28; // cursor radius on the ring (px)
 
   // ---- HSV -> RGB ----
@@ -202,6 +206,7 @@
   var cursor = document.getElementById("cursor");
   var hueVal = document.getElementById("hueVal");
   var hint = document.getElementById("hint");
+  var hud = document.querySelector(".hud");
 
   // build the color ring so it matches the background palette (HSV S80/V80)
   (function buildWheel() {
@@ -246,37 +251,152 @@
     return d > 180 ? d - 360 : d;
   }
 
-  // dir = +1 : swipe left  -> advance a step, front card exits to the LEFT
-  // dir = -1 : swipe right -> go back a step,  front card exits to the RIGHT
+  // ---- Web Audio: sound reaction derived from HSB ----
+  // Hue -> pitch (major pentatonic, so every jump stays consonant and the
+  // golden angle spreads notes evenly across the scale just like the colors).
+  // S -> timbre brightness (low-pass cutoff), V -> loudness. On a swipe the
+  // pitch glides old -> new in sync with the card slide, so a back-swipe is
+  // the exact reverse glissando.
+  var audioCtx = null,
+    master = null;
+  function ensureAudio() {
+    if (audioCtx) {
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      return;
+    }
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    audioCtx = new AC();
+    master = audioCtx.createGain();
+    master.gain.value = 0.8;
+    master.connect(audioCtx.destination);
+  }
+
+  // major pentatonic (semitones from the root) across 3 octaves
+  var PENTA = [];
+  (function () {
+    var base = [0, 2, 4, 7, 9];
+    for (var o = 0; o < 3; o++) {
+      for (var i = 0; i < base.length; i++) PENTA.push(base[i] + 12 * o);
+    }
+  })();
+  var ROOT_HZ = 220; // A3
+
+  function freqForHue(h) {
+    var idx = Math.round((norm(h) / 360) * (PENTA.length - 1));
+    return ROOT_HZ * Math.pow(2, PENTA[idx] / 12);
+  }
+
+  // a soft plucked note gliding oldHue -> newHue over durMs
+  function playSlide(oldHue, newHue, durMs) {
+    ensureAudio();
+    if (!audioCtx) return;
+    var t = audioCtx.currentTime;
+    var dur = durMs / 1000;
+    var f0 = freqForHue(oldHue),
+      f1 = freqForHue(newHue);
+
+    var osc = audioCtx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(f0, t);
+    osc.frequency.exponentialRampToValueAtTime(f1, t + dur);
+
+    // a quieter voice a fifth above for body
+    var osc2 = audioCtx.createOscillator();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(f0 * 1.5, t);
+    osc2.frequency.exponentialRampToValueAtTime(f1 * 1.5, t + dur);
+    var mix2 = audioCtx.createGain();
+    mix2.gain.value = 0.35;
+
+    var filter = audioCtx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 500 + SAT * 4500; // S -> brightness
+    filter.Q.value = 0.7;
+
+    var env = audioCtx.createGain();
+    var peak = 0.06 + VAL * 0.26; // V -> loudness
+    var end = t + Math.max(dur, 0.25) + 0.7;
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(peak, t + 0.015); // pluck attack
+    env.gain.exponentialRampToValueAtTime(0.0001, end); // decay tail
+
+    osc.connect(filter);
+    osc2.connect(mix2);
+    mix2.connect(filter);
+    filter.connect(env);
+    env.connect(master);
+
+    osc.start(t);
+    osc2.start(t);
+    osc.stop(end + 0.05);
+    osc2.stop(end + 0.05);
+  }
+
+  // Build a clip-path whose boundary is a smooth, organic wavy curve (a sum of
+  // two sines with a drifting phase) rather than a straight line. `fwd` picks
+  // which side keeps the old color; `seam` is the boundary's base position
+  // (0..100 % of width); `amp` the wave amplitude (% of width); `ph` the phase.
+  function seamClip(fwd, seam, amp, ph) {
+    var N = 26,
+      pts = [],
+      i,
+      x,
+      yf,
+      w;
+    pts.push(fwd ? "0% 0%" : "100% 0%"); // old kept LEFT (fwd) / RIGHT (back)
+    for (i = 0; i <= N; i++) {
+      yf = i / N;
+      w =
+        amp *
+        (0.72 * Math.sin(2 * Math.PI * 1.5 * yf + ph) +
+          0.28 * Math.sin(2 * Math.PI * 3.3 * yf + ph * 1.7 + 1.1));
+      x = seam + w;
+      x = x < 0 ? 0 : x > 100 ? 100 : x;
+      pts.push(x.toFixed(2) + "% " + (yf * 100).toFixed(2) + "%");
+    }
+    pts.push(fwd ? "0% 100%" : "100% 100%");
+    return "polygon(" + pts.join(", ") + ")";
+  }
+
+  // dir = +1 : swipe left  -> advance a step, new color wipes in from the RIGHT
+  // dir = -1 : swipe right -> go back a step, new color wipes in from the LEFT
   function slide(dir) {
     if (animating) return;
     animating = true;
 
+    var fwd = dir > 0;
     var oldHue = hueForStep(step);
     step += dir;
     var newHue = hueForStep(step);
-    var exitSign = dir > 0 ? -1 : 1; // left swipe -> slide out left
 
-    // back card = destination color, sitting still underneath
+    playSlide(oldHue, newHue, SLIDE_MS); // HSB-derived sound, glides old -> new
+
+    // back card = destination color; front (on top) = source color, wiped away
     cardBack.style.backgroundColor = rgbStr(newHue);
-    // front card = source color on top, starts centered
     cardFront.style.backgroundColor = rgbStr(oldHue);
-    cardFront.style.transform = "translateX(0)";
 
     var arc = shortestArc(oldHue, newHue); // move the cursor the short way
     var t0 = performance.now();
 
     function frame(now) {
       var t = Math.min(1, (now - t0) / SLIDE_MS);
-      var e = easeInOutCubic(t);
-      // front (old color) slides off-screen; back (new color) is revealed
-      cardFront.style.transform = "translateX(" + exitSign * 100 * e + "%)";
-      applyIndicator(oldHue + arc * e);
       if (t < 1) {
+        var e = easeInOutCubic(t);
+        var seam = fwd ? 100 * (1 - e) : 100 * e; // sweep the old color off
+        var taper = Math.sin(Math.PI * e); // wave grows then relaxes
+        var recoil = 6.5 * Math.exp(-Math.pow((e - 0.82) / 0.11, 2)); // elastic settle
+        var amp = 6.5 * taper + 2.2 + recoil;
+        var ph = (now - t0) / 260; // drifting phase -> undulation
+        var cp = seamClip(fwd, seam, amp, ph);
+        cardFront.style.clipPath = cp;
+        cardFront.style.webkitClipPath = cp;
+        applyIndicator(oldHue + arc * e);
         requestAnimationFrame(frame);
       } else {
-        // commit: front now holds the new color, re-centered and back on top
-        cardFront.style.transform = "translateX(0)";
+        // commit: front now holds the new color, unclipped, ready for next
+        cardFront.style.clipPath = "none";
+        cardFront.style.webkitClipPath = "none";
         cardFront.style.backgroundColor = rgbStr(newHue);
         applyIndicator(newHue);
         animating = false;
@@ -288,7 +408,8 @@
   // ---- swipe detection (pointer events cover touch + mouse) ----
   var startX = 0,
     startY = 0,
-    tracking = false;
+    tracking = false,
+    lastTap = 0;
 
   window.addEventListener(
     "pointerdown",
@@ -307,9 +428,21 @@
       tracking = false;
       var dx = e.clientX - startX;
       var dy = e.clientY - startY;
-      if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) <= Math.abs(dy)) return;
-      hideHint();
-      slide(dx < 0 ? 1 : -1); // swipe left => advance, swipe right => back
+      if (Math.abs(dx) >= SWIPE_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
+        hideHint();
+        slide(dx < 0 ? 1 : -1); // swipe left => advance, swipe right => back
+        return;
+      }
+      // otherwise a tap: double-tap toggles the hue indicator
+      if (Math.abs(dx) < 12 && Math.abs(dy) < 12) {
+        var tnow = e.timeStamp || performance.now();
+        if (tnow - lastTap < 300) {
+          hud.classList.toggle("hidden");
+          lastTap = 0;
+        } else {
+          lastTap = tnow;
+        }
+      }
     },
     { passive: true }
   );
