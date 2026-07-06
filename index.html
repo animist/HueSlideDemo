@@ -308,8 +308,10 @@
     if (!audioCtx) return;
     var t = audioCtx.currentTime;
     var dur = durMs / 1000;
-    var f0 = freqForHue(oldHue),
-      f1 = freqForHue(newHue);
+    // saturation also sets the octave: vivid = higher, muted = lower (~±1 oct)
+    var oct = Math.pow(2, (curSat - 0.575) * 2.35);
+    var f0 = freqForHue(oldHue) * oct,
+      f1 = freqForHue(newHue) * oct;
 
     var osc = audioCtx.createOscillator();
     osc.type = "triangle";
@@ -479,7 +481,7 @@
     fx.width = W * dpr;
     fx.height = H * dpr;
     fxc.setTransform(dpr, 0, 0, dpr, 0, 0);
-    var CELL = 26;
+    var CELL = 13; // grain size (finer)
     var cols = Math.ceil(W / CELL),
       rows = Math.ceil(H / CELL),
       total = cols * rows;
