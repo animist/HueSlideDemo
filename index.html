@@ -439,24 +439,29 @@
   // Clip-path whose boundary is a smooth organic curve built from `comps`.
   // `fwd` picks which side keeps the old color; `seam` is the base position
   // (0..100 % of width); `amp` the amplitude (% of width); `tsec` elapsed sec.
-  function seamClip(fwd, seam, amp, tsec, comps) {
+  function seamClip(fwd, seam, amp, tsec, comps, peakY) {
     var N = 26,
       pts = [],
       i,
       c,
       x,
       yf,
-      w;
+      w,
+      crest;
+    var crestDir = fwd ? 1 : -1; // the peak bulges toward the incoming color
     pts.push(fwd ? "0% 0%" : "100% 0%"); // old kept LEFT (fwd) / RIGHT (back)
     for (i = 0; i <= N; i++) {
       yf = i / N;
-      w = 0;
+      // Gaussian centered on the swipe height -> the wave is tallest there
+      crest = Math.exp(-0.5 * Math.pow((yf - peakY) / 0.15, 2));
+      w = crestDir * crest * 1.4; // dominant crest at the swiped height
       for (c = 0; c < comps.length; c++) {
         w +=
           comps[c].weight *
           Math.sin(
             2 * Math.PI * comps[c].freq * yf + comps[c].phase + comps[c].drift * tsec
-          );
+          ) *
+          (0.22 + 0.55 * crest); // organic ripple, larger near the swipe
       }
       x = seam + amp * w;
       x = x < 0 ? 0 : x > 100 ? 100 : x;
@@ -468,8 +473,9 @@
 
   // dir = +1 : swipe left  -> advance a step, new color wipes in from the RIGHT
   // dir = -1 : swipe right -> go back a step, new color wipes in from the LEFT
-  function slide(dir) {
+  function slide(dir, swipeYf) {
     if (animating) return;
+    if (swipeYf === undefined) swipeYf = 0.5; // keyboard / fallback: centre
     animating = true;
 
     var fwd = dir > 0;
@@ -497,7 +503,7 @@
         var recoil = 6.5 * Math.exp(-Math.pow((e - 0.82) / 0.11, 2)); // elastic settle
         var amp = ampBase * taper + 2 + recoil;
         var tsec = (now - t0) / 1000; // drives the phase drift
-        var cp = seamClip(fwd, seam, amp, tsec, wave);
+        var cp = seamClip(fwd, seam, amp, tsec, wave, swipeYf);
         cardFront.style.clipPath = cp;
         cardFront.style.webkitClipPath = cp;
         applyIndicator(oldHue + arc * e);
@@ -610,7 +616,10 @@
       var dy = e.clientY - startY;
       if (Math.abs(dx) >= SWIPE_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
         hideHint();
-        slide(dx < 0 ? 1 : -1); // swipe left => advance, swipe right => back
+        // wave peaks at the height the finger swiped
+        var yf = (startY + e.clientY) / 2 / window.innerHeight;
+        yf = yf < 0 ? 0 : yf > 1 ? 1 : yf;
+        slide(dx < 0 ? 1 : -1, yf); // swipe left => advance, right => back
         return;
       }
       if (Math.abs(dy) >= SWIPE_THRESHOLD && Math.abs(dy) > Math.abs(dx)) {
