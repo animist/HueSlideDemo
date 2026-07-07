@@ -100,7 +100,7 @@
     will-change: left, top;
   }
 
-  .hue-val {
+  .val {
     color: #fff;
     font-size: 12px;
     font-weight: 600;
@@ -108,6 +108,41 @@
     letter-spacing: 0.4px;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
     font-variant-numeric: tabular-nums;
+  }
+
+  .gauges {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .gcol {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .sat-meter {
+    position: relative;
+    width: 12px;
+    height: 68px;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    background: #888; /* replaced by JS with a saturation gradient */
+  }
+  .sat-marker {
+    position: absolute;
+    left: -3px;
+    right: -3px;
+    height: 3px;
+    bottom: 0;
+    transform: translateY(50%);
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.55);
+    border-radius: 2px;
+    box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
+    will-change: bottom;
   }
 
   /* ---- swipe hint ---- */
@@ -140,12 +175,22 @@
 <div class="card" id="cardFront"></div>
 <canvas id="fx"></canvas>
 
-<div class="hud" aria-hidden="true">
-  <div class="wheel-wrap">
-    <div class="wheel" id="wheel"></div>
-    <div class="cursor" id="cursor"></div>
+<div class="hud hidden" aria-hidden="true">
+  <div class="gauges">
+    <div class="gcol">
+      <div class="wheel-wrap">
+        <div class="wheel" id="wheel"></div>
+        <div class="cursor" id="cursor"></div>
+      </div>
+      <div class="val" id="hueVal">0&deg;</div>
+    </div>
+    <div class="gcol">
+      <div class="sat-meter" id="satMeter">
+        <div class="sat-marker" id="satMarker"></div>
+      </div>
+      <div class="val" id="satVal">80%</div>
+    </div>
   </div>
-  <div class="hue-val" id="hueVal">0&deg;</div>
 </div>
 
 <div class="hint" id="hint">&larr; &uarr; &nbsp;swipe&nbsp; &darr; &rarr;</div>
@@ -220,6 +265,9 @@
   var wheel = document.getElementById("wheel");
   var cursor = document.getElementById("cursor");
   var hueVal = document.getElementById("hueVal");
+  var satMeter = document.getElementById("satMeter");
+  var satMarker = document.getElementById("satMarker");
+  var satVal = document.getElementById("satVal");
   var hint = document.getElementById("hint");
   var hud = document.querySelector(".hud");
 
@@ -239,6 +287,17 @@
     cursor.style.left = 34 + CURSOR_R * Math.sin(rad) + "px";
     cursor.style.top = 34 - CURSOR_R * Math.cos(rad) + "px";
     hueVal.textContent = (Math.round(n) % 360) + "°";
+    // saturation meter shows the S spectrum (muted -> vivid) at the current hue
+    satMeter.style.background =
+      "linear-gradient(to top, " + rgbStr(n, SAT_MIN) + ", " + rgbStr(n, 1) + ")";
+  }
+
+  // position the saturation marker + number for a given S
+  function applySat(s) {
+    var frac = (s - SAT_MIN) / (SAT_MAX - SAT_MIN);
+    frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+    satMarker.style.bottom = frac * 100 + "%";
+    satVal.textContent = Math.round(s * 100) + "%";
   }
 
   // ---- state ----
@@ -256,6 +315,7 @@
   cardFront.style.backgroundColor = rgbStr(hueForStep(step));
   cardBack.style.backgroundColor = rgbStr(hueForStep(step));
   applyIndicator(hueForStep(step));
+  applySat(curSat);
 
   function easeInOutCubic(t) {
     return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -512,11 +572,13 @@
         var idx = order[revealed].i;
         fxc.clearRect((idx % cols) * CELL, Math.floor(idx / cols) * CELL, CELL + 1, CELL + 1);
       }
+      applySat(oldS + (newS - oldS) * t); // animate the meter with the dissolve
       if (t < 1) {
         requestAnimationFrame(frame);
       } else {
         fx.style.display = "none";
         fxc.clearRect(0, 0, W, H);
+        applySat(newS);
         animating = false;
       }
     }
