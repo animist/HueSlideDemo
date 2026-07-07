@@ -1,7 +1,7 @@
 // Service worker for the Hue Slide Demo (PWA).
 // Network-first so updates always propagate when online, with a cache
 // fallback so the app still launches offline / when installed.
-const CACHE = "hueslide-v2";
+const CACHE = "hueslide-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -29,6 +29,8 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  // let cross-origin requests (e.g. Google Analytics) go straight to the network
+  if (new URL(event.request.url).origin !== self.location.origin) return;
   event.respondWith(
     fetch(event.request)
       .then((resp) => {
